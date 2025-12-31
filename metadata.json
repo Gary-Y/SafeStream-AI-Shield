@@ -1,6 +1,6 @@
 {
   "name": "SafeStream WebRTC Shield",
-  "description": "A React-based video calling interface simulation that uses Google Gemini 2.5 Flash to detect sensitive or NSFW content in real-time and automatically applies a privacy blur mask to specific areas of the video stream.",
+  "description": "A React-based video calling interface that uses TensorFlow.js (NSFWJS) client-side to detect sensitive content in real-time and automatically applies a privacy mask to the video stream without sending data to a server.",
   "requestFramePermissions": [
     "camera",
     "microphone"

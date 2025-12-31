@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { detectSensitiveContent } from '../services/geminiService';
-import { BoundingBox, ProcessingStats } from '../types';
+import React, { useEffect, useRef, useState } from 'react';
+import { detectSensitiveContent, loadModel } from '../services/geminiService'; // Keeping filename but using new logic
+import { DetectionResult, ProcessingStats } from '../types';
 
 interface VideoProcessorProps {
   stream: MediaStream | null;
@@ -18,10 +18,16 @@ export const VideoProcessor: React.FC<VideoProcessorProps> = ({
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const processingRef = useRef<boolean>(false);
-  const detectionsRef = useRef<BoundingBox[]>([]);
+  const resultRef = useRef<DetectionResult | null>(null);
   const lastProcessedTimeRef = useRef<number>(0);
+  const [modelReady, setModelReady] = useState(false);
 
   const [videoDimensions, setVideoDimensions] = useState({ width: 640, height: 480 });
+
+  // Init Model
+  useEffect(() => {
+    loadModel().then(() => setModelReady(true));
+  }, []);
 
   // Handle stream attachment
   useEffect(() => {
@@ -33,81 +39,68 @@ export const VideoProcessor: React.FC<VideoProcessorProps> = ({
   // Main Processing Loop (AI Detection)
   useEffect(() => {
     let isMounted = true;
+    let animationFrameId: number;
     
     const processFrame = async () => {
-      if (!isMounted || !isActive || !videoRef.current || !canvasRef.current) return;
+      if (!isMounted || !isActive || !videoRef.current || !modelReady) {
+        if (isMounted && isActive) {
+             animationFrameId = requestAnimationFrame(processFrame);
+        }
+        return;
+      }
 
       const now = Date.now();
-      // Rate limit to avoid overwhelming the API and creating too much lag
-      // Gemini Flash is fast, but we'll stick to ~2-3 FPS for the detection logic to keep it smooth enough without high cost.
-      if (now - lastProcessedTimeRef.current > 400 && !processingRef.current) {
-        processingRef.current = true;
-        
-        try {
-          // 1. Capture current frame to a temporary canvas for encoding
-          const offscreenCanvas = document.createElement('canvas');
-          offscreenCanvas.width = videoDimensions.width;
-          offscreenCanvas.height = videoDimensions.height;
-          const ctx = offscreenCanvas.getContext('2d');
-          
-          if (ctx) {
-            // Draw without mirroring for analysis to ensure coordinates match standard orientation,
-            // or mirror if the display is mirrored? 
-            // Actually, coordinates from Gemini are normalized. 
-            // If we display mirrored, we should probably analyze mirrored or flip coordinates.
-            // For simplicity, we send what the user SEES.
+      // Client-side can run faster than API calls. 
+      // Running at ~5-10 FPS is usually sufficient for safety without killing CPU.
+      if (now - lastProcessedTimeRef.current > 200 && !processingRef.current) {
+        // Ensure video is playing and has data
+        if (videoRef.current.readyState === 4) {
+            processingRef.current = true;
             
-            ctx.save();
-            if (isMirrored) {
-                ctx.translate(videoDimensions.width, 0);
-                ctx.scale(-1, 1);
-            }
-            ctx.drawImage(videoRef.current, 0, 0, videoDimensions.width, videoDimensions.height);
-            ctx.restore();
-
-            // Low quality jpeg to speed up upload
-            const base64 = offscreenCanvas.toDataURL('image/jpeg', 0.6); 
-            
-            const startTime = performance.now();
-            const result = await detectSensitiveContent(base64);
-            const endTime = performance.now();
-            
-            if (isMounted) {
-              detectionsRef.current = result.detections || [];
-              if (onStatsUpdate) {
-                onStatsUpdate({
-                  fps: Math.round(1000 / (endTime - startTime)),
-                  latencyMs: Math.round(endTime - startTime),
-                  detectionsCount: result.detections.length
-                });
+            try {
+              const startTime = performance.now();
+              // Pass video element directly to TFJS
+              const result = await detectSensitiveContent(videoRef.current);
+              const endTime = performance.now();
+              
+              if (isMounted) {
+                resultRef.current = result;
+                if (onStatsUpdate) {
+                  // Get probability of the top category for stats display
+                  const topProb = result.predictions[0]?.probability || 0;
+                  
+                  onStatsUpdate({
+                    fps: Math.round(1000 / (endTime - startTime)),
+                    latencyMs: Math.round(endTime - startTime),
+                    detectionsCount: result.isSafe ? 0 : Math.round(topProb * 100)
+                  });
+                }
               }
+            } catch (err) {
+              console.error("Frame processing error", err);
+            } finally {
+              processingRef.current = false;
+              lastProcessedTimeRef.current = Date.now();
             }
-          }
-        } catch (err) {
-          console.error("Frame processing error", err);
-        } finally {
-          processingRef.current = false;
-          lastProcessedTimeRef.current = Date.now();
         }
       }
 
-      // Continue loop
       if (isActive) {
-        requestAnimationFrame(processFrame);
+        animationFrameId = requestAnimationFrame(processFrame);
       }
     };
 
-    if (isActive) {
+    if (isActive && modelReady) {
       processFrame();
     } else {
-        // Clear detections if inactive
-        detectionsRef.current = [];
+      resultRef.current = null;
     }
 
     return () => {
       isMounted = false;
+      cancelAnimationFrame(animationFrameId);
     };
-  }, [isActive, videoDimensions, onStatsUpdate, isMirrored]);
+  }, [isActive, modelReady, onStatsUpdate]);
 
 
   // Rendering Loop (Drawing the Mask)
@@ -116,57 +109,66 @@ export const VideoProcessor: React.FC<VideoProcessorProps> = ({
 
     const renderOverlay = () => {
       const canvas = canvasRef.current;
-      const video = videoRef.current;
+      const result = resultRef.current;
 
-      if (canvas && video) {
+      if (canvas) {
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (ctx) {
           // Clear previous drawings
           ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-          if (isActive) {
-              // Get current detections
-              const boxes = detectionsRef.current;
-
-              // Apply blurring/pixelation to detected areas
-              if (boxes.length > 0) {
-                boxes.forEach(box => {
-                  // Convert normalized coordinates to pixel coordinates
-                  const y = box.ymin * canvas.height;
-                  const x = box.xmin * canvas.width;
-                  const h = (box.ymax - box.ymin) * canvas.height;
-                  const w = (box.xmax - box.xmin) * canvas.width;
-
-                  ctx.save();
-                  
-                  // Draw the privacy shield
-                  ctx.beginPath();
-                  ctx.rect(x, y, w, h);
-                  ctx.clip();
-
-                  // 1. Draw a dark background
-                  ctx.fillStyle = 'rgba(20, 20, 20, 0.98)';
-                  ctx.fillRect(x, y, w, h);
-
-                  // 2. Add a label
-                  ctx.font = 'bold 14px sans-serif';
-                  ctx.fillStyle = '#f87171'; // Red-400
-                  ctx.textAlign = 'center';
-                  ctx.textBaseline = 'middle';
-                  ctx.fillText('SENSITIVE CONTENT', x + w/2, y + h/2);
-                  ctx.font = '10px sans-serif';
-                  ctx.fillStyle = '#9ca3af';
-                  ctx.fillText('AI HIDDEN', x + w/2, y + h/2 + 15);
-
-                  ctx.restore();
-
-                  // Draw border
-                  ctx.strokeStyle = '#ef4444';
-                  ctx.lineWidth = 3;
-                  ctx.strokeRect(x, y, w, h);
-                });
-              }
+          // Apply mirroring to the canvas context so any text/rects we draw match video orientation
+          ctx.save();
+          if (isMirrored) {
+            ctx.translate(canvas.width, 0);
+            ctx.scale(-1, 1);
           }
+
+          if (isActive && result && !result.isSafe) {
+              // Full frame blocking for client-side classification
+              const w = canvas.width;
+              const h = canvas.height;
+
+              // 1. Heavy Blur Backdrop (simulated with semi-transparent fill because real blur is expensive in canvas)
+              ctx.fillStyle = 'rgba(20, 20, 20, 0.98)';
+              ctx.fillRect(0, 0, w, h);
+
+              // 2. Warning visual (needs to be un-mirrored to be readable if we are mirrored)
+              ctx.restore(); // Restore context to normal for text
+              ctx.save();
+              
+              // Draw centered warning
+              const centerX = w / 2;
+              const centerY = h / 2;
+
+              ctx.shadowColor = 'rgba(0,0,0,0.5)';
+              ctx.shadowBlur = 10;
+
+              // Icon
+              ctx.fillStyle = '#ef4444'; // Red
+              ctx.beginPath();
+              ctx.arc(centerX, centerY - 20, 30, 0, 2 * Math.PI);
+              ctx.fill();
+
+              // Cross line
+              ctx.strokeStyle = 'white';
+              ctx.lineWidth = 4;
+              ctx.beginPath();
+              ctx.moveTo(centerX - 15, centerY - 20);
+              ctx.lineTo(centerX + 15, centerY - 20);
+              ctx.stroke();
+
+              ctx.font = 'bold 24px sans-serif';
+              ctx.fillStyle = '#f87171';
+              ctx.textAlign = 'center';
+              ctx.fillText('SENSITIVE CONTENT', centerX, centerY + 30);
+              
+              ctx.font = '16px sans-serif';
+              ctx.fillStyle = '#9ca3af';
+              ctx.fillText(`Category: ${result.primaryCategory}`, centerX, centerY + 55);
+          }
+
+          ctx.restore();
         }
       }
 
@@ -176,7 +178,7 @@ export const VideoProcessor: React.FC<VideoProcessorProps> = ({
     renderOverlay();
 
     return () => cancelAnimationFrame(animationFrameId);
-  }, [isActive]);
+  }, [isActive, isMirrored]);
 
 
   const handleMetadataLoaded = () => {
@@ -195,7 +197,7 @@ export const VideoProcessor: React.FC<VideoProcessorProps> = ({
         ref={videoRef}
         autoPlay
         playsInline
-        muted
+        muted // Muted locally, audio stream is handled by WebRTC
         onLoadedMetadata={handleMetadataLoaded}
         className="absolute inset-0 w-full h-full object-cover"
         style={{ transform: isMirrored ? 'scaleX(-1)' : 'none' }} 
@@ -224,8 +226,8 @@ export const VideoProcessor: React.FC<VideoProcessorProps> = ({
 
       {/* Status Badge */}
       <div className="absolute top-4 right-4 bg-black/60 backdrop-blur px-3 py-1 rounded-full text-xs font-mono border border-gray-700 flex items-center gap-2 z-30 opacity-0 group-hover:opacity-100 transition-opacity">
-         <div className={`w-2 h-2 rounded-full ${isActive ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
-         {isActive ? 'SHIELD ACTIVE' : 'SHIELD PAUSED'}
+         <div className={`w-2 h-2 rounded-full ${isActive && modelReady ? 'bg-green-500 animate-pulse' : !modelReady ? 'bg-yellow-500' : 'bg-red-500'}`}></div>
+         {isActive ? (modelReady ? 'TFJS SHIELD ACTIVE' : 'LOADING MODEL...') : 'SHIELD PAUSED'}
       </div>
     </div>
   );

@@ -11,10 +11,10 @@ const App: React.FC = () => {
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 01-1.043 3.296 3.745 3.745 0 01-3.296 1.043A3.745 3.745 0 0112 21c-1.268 0-2.39-.63-3.068-1.593a3.745 3.745 0 01-3.296-1.043 3.745 3.745 0 01-1.043-3.296A3.745 3.745 0 013 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 011.043-3.296 3.745 3.745 0 013.296-1.043A3.745 3.745 0 011.043 3.296A3.745 3.745 0 0121 12z" />
             </svg>
           </div>
-          <h1 className="text-lg md:text-xl font-bold tracking-tight truncate">SafeStream <span className="text-indigo-400 font-light hidden xs:inline">AI Shield</span></h1>
+          <h1 className="text-lg md:text-xl font-bold tracking-tight truncate">SafeStream <span className="text-indigo-400 font-light hidden xs:inline">On-Device Shield</span></h1>
         </div>
         <div className="text-xs text-gray-500 hidden md:block">
-          Powered by Gemini 2.5 Flash • Real-time Privacy Protection
+          Powered by TensorFlow.js • Client-side Privacy Protection
         </div>
       </header>
 

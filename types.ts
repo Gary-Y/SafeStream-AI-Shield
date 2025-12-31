@@ -1,14 +1,12 @@
-export interface BoundingBox {
-  ymin: number;
-  xmin: number;
-  ymax: number;
-  xmax: number;
-  label?: string;
-  confidence?: number;
+export interface Prediction {
+  className: 'Neutral' | 'Drawing' | 'Hentai' | 'Porn' | 'Sexy';
+  probability: number;
 }
 
 export interface DetectionResult {
-  detections: BoundingBox[];
+  isSafe: boolean;
+  predictions: Prediction[];
+  primaryCategory: string;
 }
 
 export enum CallStatus {
@@ -21,5 +19,5 @@ export enum CallStatus {
 export interface ProcessingStats {
   fps: number;
   latencyMs: number;
-  detectionsCount: number;
+  detectionsCount: number; // Used to indicate severity/probability % in UI
 }
