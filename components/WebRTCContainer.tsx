@@ -8,12 +8,14 @@ export const WebRTCContainer: React.FC = () => {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [callStatus, setCallStatus] = useState<CallStatus>(CallStatus.IDLE);
   const [isAiEnabled, setIsAiEnabled] = useState<boolean>(true);
-  
+
   // PeerJS State
   const [myPeerId, setMyPeerId] = useState<string>('');
   const [remotePeerIdInput, setRemotePeerIdInput] = useState<string>('');
   const peerRef = useRef<Peer | null>(null);
   const connectionRef = useRef<MediaConnection | null>(null);
+  // Ref to always access current localStream in callbacks (避免闭包陷阱)
+  const localStreamRef = useRef<MediaStream | null>(null);
 
   // Separate stats for local and remote for debugging
   const [localStats, setLocalStats] = useState<ProcessingStats>({ fps: 0, latencyMs: 0, detectionsCount: 0 });
@@ -22,31 +24,40 @@ export const WebRTCContainer: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [copySuccess, setCopySuccess] = useState<boolean>(false);
 
-  // Initialize PeerJS on mount
+  // 同步 localStream 到 ref，确保回调中总能访问最新值
+  useEffect(() => {
+    localStreamRef.current = localStream;
+  }, [localStream]);
+
+  // Initialize PeerJS on mount (仅初始化一次，不依赖 localStream)
   useEffect(() => {
     const initPeer = async () => {
       try {
         const peer = new Peer();
-        
+
         peer.on('open', (id) => {
           console.log('My peer ID is: ' + id);
           setMyPeerId(id);
         });
 
         peer.on('call', (call) => {
-          if (localStream) {
-             console.log("Answering incoming call...");
-             call.answer(localStream);
-             setupCallEventHandlers(call);
+          // 使用 ref 获取当前流，避免闭包陷阱
+          const currentStream = localStreamRef.current;
+          if (currentStream) {
+            console.log("Answering incoming call with existing stream...");
+            call.answer(currentStream);
+            setupCallEventHandlers(call);
           } else {
-             navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-               .then((stream) => {
-                  setLocalStream(stream);
-                  setCallStatus(CallStatus.CONNECTED);
-                  call.answer(stream);
-                  setupCallEventHandlers(call);
-               })
-               .catch(err => setError("Could not access camera to answer call."));
+            console.log("No local stream, requesting camera access...");
+            navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+              .then((stream) => {
+                setLocalStream(stream);
+                localStreamRef.current = stream;
+                setCallStatus(CallStatus.CONNECTED);
+                call.answer(stream);
+                setupCallEventHandlers(call);
+              })
+              .catch(err => setError("Could not access camera to answer call."));
           }
         });
 
@@ -66,7 +77,7 @@ export const WebRTCContainer: React.FC = () => {
     return () => {
       peerRef.current?.destroy();
     };
-  }, [localStream]);
+  }, []); // 空依赖数组：仅在组件挂载时初始化一次
 
   const setupCallEventHandlers = (call: MediaConnection) => {
     setCallStatus(CallStatus.CONNECTED);

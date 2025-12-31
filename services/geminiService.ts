@@ -13,20 +13,19 @@ export const loadModel = async (): Promise<boolean> => {
   try {
     isModelLoading = true;
     console.log("Loading NSFWJS model...");
-    
-    // Explicitly using the hosted URL for MobileNetV2 to avoid ESM relative path issues.
-    // We also await tf.ready() to ensure the backend (WebGL) is initialized.
+
     await tf.ready();
-    
-    // Sometimes the default export needs to be handled for certain bundlers/CDN
+
     // @ts-ignore
     const loadFn = nsfwjs.load || nsfwjs.default?.load || nsfwjs.default;
 
+    // Use locally hosted model
+    const modelUrl = '/models/mobilenet_v2/model.json';
+
     if (typeof loadFn === 'function') {
-         model = await loadFn('https://models.infinitered.io/saved_model_mobilenet_v2/');
+         model = await loadFn(modelUrl);
     } else {
-         // Fallback if import structure is standard
-         model = await nsfwjs.load('https://models.infinitered.io/saved_model_mobilenet_v2/');
+         model = await nsfwjs.load(modelUrl);
     }
 
     console.log("NSFWJS model loaded successfully");
